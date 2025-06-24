@@ -22,7 +22,6 @@ import * as path from 'path';
 import prompts from 'prompts';
 import SshConfig, { parse, stringify } from 'ssh-config';
 import { URL } from 'url';
-import { client as WebSocketClient, connection as WebSocketConnection } from 'websocket';
 
 const isDebugMode = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
 const logger = {
@@ -32,8 +31,8 @@ const logger = {
 	warn: (message: string) => console.warn(`[WARN] ${message}`),
 };
 
-const SSHD_SOCKET_PORT = 33765; // Standard SSHD port in the dev space, for BAS Remote Access. See also app-studio-remote-access/src/tunnel/ssh-utils.ts
-const LOCAL_JWT_REDIRECT_PORT = 55532; // Port for the local HTTP server for retrieving the JWT callback redirect. See also app-studio-toolkit/src/authentication/auth-utils.ts
+const SSHD_SOCKET_PORT = 33765; // Standard SSHD port in the dev space, for BAS Remote Access.
+const LOCAL_JWT_REDIRECT_PORT = 55532; // Port for the local HTTP server for retrieving the JWT callback redirect.
 
 let landscapeUrl = process.env.BAS_LANDSCAPE_URL || ''; // e.g. 'https://xxx.eu20cf.applicationstudio.cloud.sap'
 if (landscapeUrl) {
@@ -61,21 +60,30 @@ let currentDevSpaceWsUrl = ''; // wsUrl for reconnects, e.g. 'wss://port33765--w
 const portForwards: { localPort: number; remotePort: number }[] = [];
 
 class WebSocketClientStream extends BaseStream {
-	public constructor(private readonly websocket: WebSocketConnection) {
+	public constructor(private readonly websocket: WebSocket) {
 		super();
-		websocket.on('message', (data) => {
-			if (data.type === 'binary' && data.binaryData) {
-				this.onData(data.binaryData);
+
+		this.websocket.addEventListener('message', (event) => {
+			if (event.data instanceof ArrayBuffer) {
+				this.onData(Buffer.from(event.data));
+			} else {
+				this.onData(event.data);
 			}
 		});
-		websocket.on('close', (code?: number, reason?: string) => {
-			if (!code) {
+
+		this.websocket.addEventListener('close', (event) => {
+			if (event.code === 1000) {
 				this.onEnd();
 			} else {
-				const error = new Error(reason);
-				(<any>error).code = code;
+				const error = new Error(event.reason || `WebSocket closed with code ${event.code}`);
+				(error as any).code = event.code;
 				this.onError(error);
 			}
+		});
+
+		this.websocket.addEventListener('error', (event) => {
+			// The event here is an ErrorEvent, which has an 'error' property
+			this.onError((event as any).error || new Error('WebSocket error'));
 		});
 	}
 
@@ -92,13 +100,15 @@ class WebSocketClientStream extends BaseStream {
 
 	public async close(error?: Error): Promise<void> {
 		if (this.disposed && !error) {
-			// Alleen opnieuw gooien als er een nieuwe error is
 			return Promise.resolve();
 		}
+
 		if (!error) {
-			this.websocket.close();
+			this.websocket.close(1000, 'Normal Closure');
 		} else {
-			this.websocket.drop((<any>error).code, error.message);
+			// Use a specific error code if available, otherwise a generic one.
+			const code = (error as any).code && (error as any).code > 1000 ? (error as any).code : 1011;
+			this.websocket.close(code, error.message);
 		}
 		this.disposed = true;
 		this.closedEmitter.fire({ error });
@@ -136,7 +146,6 @@ async function retrieveJwtInteractive(targetLandscapeUrl: string): Promise<strin
 
 				req.on('end', () => {
 					try {
-						// Probeer de body te parsen als JSON
 						const jsonBody = JSON.parse(body);
 						const jwt = jsonBody.jwt;
 
@@ -207,7 +216,7 @@ async function getDevSpaceDetails(
 		logger.debug(`Found dev space: ${targetDevSpace.id}, Status: ${targetDevSpace.status}`);
 		return targetDevSpace;
 	} catch (error) {
-		logger.error(`Error retrieving Dev Space details for ${targetDevspaceId}:`, error as Error);
+		logger.error(`Error retrieving Dev Space details for ${targetDevspaceId}`);
 		throw error;
 	}
 }
@@ -217,7 +226,7 @@ async function ensureDevSpaceRunning(
 	jwt: string,
 	devSpace: devspace.DevspaceInfo,
 ): Promise<devspace.DevspaceInfo> {
-	// The VS code extension kinda does the same (see app-studio-toolkit/src/devspace-manager/devspace/update.ts, updateDevSpace & autoRefresh function)
+	// The VS code extension kinda does the same
 	let currentDevSpace = devSpace;
 	if (currentDevSpace.status !== devspace.DevSpaceStatus.RUNNING) {
 		logger.info(`Dev space ${currentDevSpace.id} is not ${devspace.DevSpaceStatus.RUNNING}, we are booting it up...`);
@@ -355,17 +364,31 @@ async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPor
 			logger.info('SSH Tunnel successfully reconnected.');
 			reconnectAttempts = 0;
 			reconnecting = false;
-			return; // Successful reconnection, exit the handler.
+			return;
 		} catch (e) {
 			logger.error(`Error reconnecting SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 			const error = e as Error;
-			if (('code' in error && error.code === 'ENOTFOUND') || error.message?.includes('getaddrinfo ENOTFOUND')) {
-				logger.warn('Please check your internet connection! It seems the server could not be reached.');
-			} else if (error.message?.includes('404 Not Found')) {
-				// TODO handle status: 401/ code: ERR_BAD_REQUEST here below:
-				let devSpaceInfo = await getDevSpaceDetails(landscapeUrl, currentJwt, devspaceId);
-				devSpaceInfo = await ensureDevSpaceRunning(landscapeUrl, currentJwt, devSpaceInfo);
-				continue;
+
+			if (error.message?.includes('Received network error or non-101 status code.')) {
+				try {
+					let devSpaceInfo = await getDevSpaceDetails(landscapeUrl, currentJwt, devspaceId);
+					devSpaceInfo = await ensureDevSpaceRunning(landscapeUrl, currentJwt, devSpaceInfo);
+					continue;
+				} catch (devSpaceError: any) {
+					if (devSpaceError?.code === 'ENOTFOUND' || devSpaceError?.message?.includes('getaddrinfo ENOTFOUND')) {
+						logger.warn('Please check your internet connection! It seems the server could not be reached.');
+					} else if (devSpaceError?.response?.status === 401) {
+						logger.warn('Authentication token is expired or invalid, retrieving a new one...');
+						try {
+							currentJwt = await retrieveJwtInteractive(landscapeUrl);
+							logger.info('New authentication token retrieved successfully.');
+							continue;
+						} catch (authError) {
+							logger.error('Failed to retrieve a new token. Aborting reconnect.', authError);
+							break;
+						}
+					}
+				}
 			} else {
 				logger.error(error.toString());
 			}
@@ -409,25 +432,21 @@ async function setupSshTunnel(opts: {
 	config.protocolExtensions.push(SshProtocolExtensionNames.sessionLatency);
 	config.addService(PortForwardingService);
 
-	const wsClient = new WebSocketClient();
-
 	return new Promise<SshClientSession>((resolve, reject) => {
-		wsClient.on('connectFailed', (error) => {
-			logger.debug(`Error code: ${'code' in error && error.code}`);
-			if (('code' in error && error.code === 'ENOTFOUND') || error.message?.includes('getaddrinfo ENOTFOUND')) {
-				logger.warn('Please check your internet connection! It seems the server could not be reached.');
-			} else if (error.message?.includes('404 Not Found')) {
-				logger.warn(`The Dev Space ${devspaceId} is not running! We should start it and try again.`);
-			} else {
-				logger.error(`SSH Tunnel: WebSocket connectFailed for ${serverUri}`, error);
-			}
-			reject(error);
+		// https://undici.nodejs.org/#/docs/api/WebSocket.md
+		const ws = new WebSocket(serverUri, {
+			protocols: ['ssh'],
+			headers: {
+				Authorization: `Bearer ${opts.jwt}`,
+			},
 		});
 
-		wsClient.on('connect', async (connection) => {
+		ws.binaryType = 'arraybuffer';
+
+		ws.addEventListener('open', async () => {
 			try {
 				logger.info(`SSH Tunnel: WebSocket connected!`);
-				const stream = new WebSocketClientStream(connection);
+				const stream = new WebSocketClientStream(ws);
 				const session = new SshClientSession(config);
 
 				session.onAuthenticating((e) => {
@@ -479,18 +498,15 @@ async function setupSshTunnel(opts: {
 				resolve(session);
 			} catch (err) {
 				logger.error('SSH Tunnel: Error during connection, authentication, or port forwarding.', err);
-				if (connection?.close) {
-					connection.close();
-				}
-				// We are already inside the promise that wsClient.on('connect', ...) implicitly creates by its nature,
-				// but the outer promise needs to be rejected.
 				reject(err);
 			}
 		});
 
-		logger.debug(`Trying to connect WebSocket ${serverUri} with JWT...`);
-		// The JWT is only once used in the WebSocket handshake, not during the SSH session.
-		wsClient.connect(serverUri, 'ssh', undefined, { Authorization: `Bearer ${opts.jwt}` });
+		ws.addEventListener('error', (event) => {
+			logger.error(`SSH Tunnel: WebSocket connectFailed for ${serverUri}`);
+			logger.debug(event.error);
+			reject(event.error);
+		});
 	});
 }
 
@@ -559,7 +575,7 @@ async function checkForNewVersion() {
 			return;
 		}
 
-		const { version: latestVersion } = await response.json();
+		const { version: latestVersion } = await response.json() as { version: string };
 		if (cacheFile) {
 			try {
 				const cacheDir = path.dirname(cacheFile);
@@ -701,8 +717,8 @@ async function main() {
 			if ((error as any)?.code === 'ECONNRESET') return; // ignore socket reset on Windows
 			throw error; // re-throw anything else
 		});
-	} catch (error) {
-		logger.error('Something went wrong in the main function:', error);
+	} catch (error: any) {
+		logger.error(error.toString());
 		process.exit(1);
 	}
 }
