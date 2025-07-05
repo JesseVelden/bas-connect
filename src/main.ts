@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import 'dotenv/config';
 
 import {
@@ -24,11 +22,18 @@ import SshConfig, { parse, stringify } from 'ssh-config';
 import { URL } from 'url';
 
 const isDebugMode = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
+const getCurrentTime = () => {
+	return new Date().toLocaleTimeString(undefined, {
+		hour: '2-digit',
+		minute: '2-digit',
+	});
+};
+
 const logger = {
-	info: (message: string) => console.log(`[INFO] ${message}`),
-	error: (message: string, error?: unknown) => console.error(`[ERROR] ${message}`, error || ''),
-	debug: (message: string) => isDebugMode && console.log(`[DEBUG] ${message}`),
-	warn: (message: string) => console.warn(`[WARN] ${message}`),
+	info: (message: string) => console.log(`${getCurrentTime()}  INFO - ${message}`),
+	error: (message: string, error?: unknown) => console.error(`${getCurrentTime()} ERROR - ${message}`, error || ''),
+	debug: (message: string) => isDebugMode && console.log(`${getCurrentTime()} DEBUG - ${message}`),
+	warn: (message: string) => console.warn(`${getCurrentTime()}  WARN - ${message}`),
 };
 
 const SSHD_SOCKET_PORT = 33765; // Standard SSHD port in the dev space, for BAS Remote Access.
@@ -82,7 +87,6 @@ class WebSocketClientStream extends BaseStream {
 		});
 
 		this.websocket.addEventListener('error', (event) => {
-			// The event here is an ErrorEvent, which has an 'error' property
 			this.onError((event as any).error || new Error('WebSocket error'));
 		});
 	}
@@ -484,7 +488,6 @@ async function setupSshTunnel(opts: {
 
 				for (const forward of portForwards) {
 					logger.info(`Setting up Port Forward: Local ${forward.localPort} -> Remote ${forward.remotePort}`);
-					// Assuming 'activePortForwardingService' is the variable holding the PortForwardingService instance.
 					await activePortForwardingService.forwardToRemotePort(
 						'127.0.0.1',
 						forward.localPort,
@@ -703,7 +706,7 @@ async function main() {
 		logger.info('Setup complete!');
 		logger.info('You can now connect to your dev space via SSH:');
 		logger.info(`ssh ${sshHostAlias}`);
-		logger.info('Or configure your SSH client to directly use port 127.0.0.1:' + fixedSshPort + ' with the key ' + sshKeyFilePath);
+		logger.info('Or configure your SSH client to directly use 127.0.0.1:' + fixedSshPort + ' with the key ' + sshKeyFilePath);
 		logger.info('The SSH tunnel will remain active as long as this script is running.');
 		logger.info('Press CTRL+C to stop the script and the tunnel.');
 		logger.info('------------------------------------------------------------');
