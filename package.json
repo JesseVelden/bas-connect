@@ -1,14 +1,14 @@
 {
   "name": "bas-connect",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Automates BAS dev space startup and SSH tunnel creation.",
   "main": "dist/main.js",
   "bin": {
-    "bas-connect": "dist/main.js"
+    "bas-connect": "bin/bas-connect"
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/main.js",
+    "start": "node bin/bas-connect",
     "dev": "cross-env DEBUG=true ts-node src/main.ts",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix"
@@ -21,6 +21,7 @@
   },
   "files": [
     "dist",
+    "bin",
     "package.json",
     "README.md"
   ],

@@ -1,4 +1,4 @@
-# BAS-Connect: SSH DevSpace Tunnel CLI
+# BAS-Connect: SSH Dev Space Tunnel CLI
 
 A utility tool for creating secure SSH tunnels to Business Application Studio (BAS) Dev Spaces, allowing direct SSH access to your development environment.
 
@@ -11,7 +11,7 @@ This tool automates the process of establishing an SSH connection to your Busine
 - **SSH Configuration**: Automatically sets up your local SSH config
 - **Connection Resilience**: Automatically reconnects if the connection is lost
 
-Once running, you can connect to your dev space using standard SSH commands and tools like VS Code Remote SSH.
+Once running, you can connect to your dev space using standard SSH commands and tools like VS Code Remote - SSH.
 
 ## Prerequisites
 
@@ -47,6 +47,7 @@ You can also set the following environment variables in a `.env` file to avoid e
 ```shell
 BAS_LANDSCAPE_URL=https://xxx.eu20cf.applicationstudio.cloud.sap
 BAS_DEVSPACE_ID=ws-xxxx
+BAS_SSH_PORT=22222
 ```
 
 ## Connecting to your dev space
@@ -69,7 +70,7 @@ The script will keep running to maintain the tunnel. Press `CTRL+C` to stop the 
 This script is based on the VS Code Extensions but adapted to provide fixed SSH ports and a more streamlined CLI experience
 with the ability to automatically start the dev space and reconnect if the connection is lost.
 
-You can run the `dev` script with arguments like this `npm run dev -- -- -l xxx.com -d ws-xxxx` the double `--` are needed to
+You can run the `dev` script with arguments like this `npm run dev -- -- -u xxx.com -d ws-xxxx` the double `--` are needed to
 first pass it to te npm run script and then again to ts-node
 
 Contributions are welcome! 
