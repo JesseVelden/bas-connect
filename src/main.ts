@@ -18,7 +18,7 @@ import open from 'open';
 import * as os from 'os';
 import * as path from 'path';
 import prompts from 'prompts';
-import SshConfig, { parse, stringify } from 'ssh-config';
+import { parse, stringify } from 'ssh-config';
 import { URL } from 'url';
 
 const isDebugMode = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
@@ -304,15 +304,7 @@ function updateSSHConfigFile(
 	const sectionName = `${new URL(targetLandscapeUrl).hostname}.${wsId}`;
 	const sshConfigFile = getSshConfigFilePath();
 
-	let configArray: SshConfig = new SshConfig();
-	if (fs.existsSync(sshConfigFile)) {
-		const configData = fs.readFileSync(sshConfigFile, 'utf-8');
-		configArray = parse(configData);
-	}
-
-	configArray.remove({ Host: sectionName });
-
-	const newSection: SshConfig = parse(`Host ${sectionName}
+	const newSection = parse(`Host ${sectionName}
   HostName 127.0.0.1
   Port ${localSshPort}
   IdentityFile ${sshKeyFilePath}
@@ -322,9 +314,16 @@ function updateSSHConfigFile(
   UserKnownHostsFile /dev/null
 `);
 
-	configArray.push(...newSection);
+	if (fs.existsSync(sshConfigFile)) {
+		const configData = fs.readFileSync(sshConfigFile, 'utf-8');
+		const configArray = parse(configData);
+		configArray.remove({ Host: sectionName });
+		configArray.push(...newSection);
+		fs.writeFileSync(sshConfigFile, stringify(configArray));
+	} else {
+		fs.writeFileSync(sshConfigFile, stringify(newSection));
+	}
 
-	fs.writeFileSync(sshConfigFile, stringify(configArray));
 	logger.debug(`SSH config updated in ${sshConfigFile} for host ${sectionName} on port ${localSshPort}.`);
 	return sectionName;
 }
@@ -568,7 +567,7 @@ async function checkForNewVersion() {
 	}
 
 	try {
-		const pkg = await import('../package.json');
+		const { default: pkg } = await import('../package.json');
 		const currentVersion = pkg.version;
 
 		logger.debug(`Checking for new version of ${pkg.name} on npmjs.com...`);

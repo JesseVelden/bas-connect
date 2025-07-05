@@ -4,4 +4,4 @@
  * bas-connect CLI
  * We get the actual built JS file from the dist folder. This way this CLI has the shebang when it is built from tsc
  */
-require('../dist/main.js')
+import '../dist/main.js';
