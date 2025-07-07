@@ -30,10 +30,10 @@ const getCurrentTime = () => {
 };
 
 const logger = {
-	info: (message: string) => console.log(`${getCurrentTime()}  INFO - ${message}`),
-	error: (message: string, error?: unknown) => console.error(`${getCurrentTime()} ERROR - ${message}`, error || ''),
-	debug: (message: string) => isDebugMode && console.log(`${getCurrentTime()} DEBUG - ${message}`),
-	warn: (message: string) => console.warn(`${getCurrentTime()}  WARN - ${message}`),
+	info: (message: string) => console.log(`${getCurrentTime()} - ${message}`),
+	error: (message: string, error?: unknown) => console.error(`${getCurrentTime()} ERROR: ${message}`, error || ''),
+	debug: (message: string) => isDebugMode && console.log(`${getCurrentTime()} DEBUG: ${message}`),
+	warn: (message: string) => console.warn(`${getCurrentTime()} WARN: ${message}`),
 };
 
 const SSHD_SOCKET_PORT = 33765; // Standard SSHD port in the dev space, for BAS Remote Access.
