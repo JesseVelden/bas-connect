@@ -27,26 +27,26 @@
     "README.md"
   ],
   "dependencies": {
-    "@microsoft/dev-tunnels-ssh": "3.12.5",
-    "@microsoft/dev-tunnels-ssh-tcp": "3.12.5",
+    "@microsoft/dev-tunnels-ssh": "3.12.12",
+    "@microsoft/dev-tunnels-ssh-tcp": "3.12.12",
     "@sap/bas-sdk": "3.12.0",
-    "dotenv": "16.5.0",
+    "dotenv": "17.2.3",
     "find-cache-directory": "6.0.0",
-    "open": "10.1.2",
+    "open": "11.0.0",
     "prompts": "2.4.2",
-    "ssh-config": "5.0.3"
+    "ssh-config": "5.0.4"
   },
   "devDependencies": {
-    "@eslint/js": "^9.29.0",
-    "@stylistic/eslint-plugin": "^5.0.0",
-    "@types/node": "^22.15.32",
+    "@eslint/js": "^9.39.1",
+    "@stylistic/eslint-plugin": "^5.5.0",
+    "@types/node": "^24.10.1",
     "@types/open": "^6.2.1",
     "@types/prompts": "^2.4.9",
-    "cross-env": "^7.0.3",
-    "eslint": "^9.29.0",
+    "cross-env": "^10.1.0",
+    "eslint": "^9.39.1",
     "eslint-plugin-simple-import-sort": "^12.1.1",
-    "typescript": "^5.8.3",
-    "typescript-eslint": "^8.35.0"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4"
   },
   "engines": {
     "node": ">=22"
