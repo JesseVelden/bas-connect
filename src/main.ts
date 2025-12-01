@@ -20,6 +20,7 @@ import * as path from 'path';
 import prompts from 'prompts';
 import { parse, stringify } from 'ssh-config';
 import { URL } from 'url';
+import WebSocket from 'ws';
 
 const isDebugMode = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
 const getCurrentTime = () => {
@@ -31,7 +32,15 @@ const getCurrentTime = () => {
 
 const logger = {
 	info: (message: string) => console.log(`${getCurrentTime()} - ${message}`),
-	error: (message: string, error?: unknown) => console.error(`${getCurrentTime()} ERROR: ${message}`, error || ''),
+	error: (message: string, error?: unknown) => {
+		if (error instanceof Error) {
+			console.error(`${getCurrentTime()} ERROR: ${message}\n${error.stack ?? error.message}`);
+		} else if (error !== undefined) {
+			console.error(`${getCurrentTime()} ERROR: ${message}`, error);
+		} else {
+			console.error(`${getCurrentTime()} ERROR: ${message}`);
+		}
+	},
 	debug: (message: string) => isDebugMode && console.log(`${getCurrentTime()} DEBUG: ${message}`),
 	warn: (message: string) => console.warn(`${getCurrentTime()} WARN: ${message}`),
 };
@@ -72,7 +81,7 @@ class WebSocketClientStream extends BaseStream {
 			if (event.data instanceof ArrayBuffer) {
 				this.onData(Buffer.from(event.data));
 			} else {
-				this.onData(event.data);
+				this.onData(event.data as Buffer);
 			}
 		});
 
@@ -339,7 +348,7 @@ async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPor
 	reconnecting = true;
 	activeSshSession = null;
 
-	while (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+	while (reconnectAttempts < MAX_RECONNECT_ATTEMPTS - 1) {
 		reconnectAttempts++;
 		logger.info(`Attempting to reconnect SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
 		if (activePortForwardingService) {
@@ -372,7 +381,7 @@ async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPor
 			logger.error(`Error reconnecting SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 			const error = e as Error;
 
-			if (error.message?.includes('Received network error or non-101 status code.')) {
+			if (error.message?.includes('Received network error or non-101 status code.') || error?.message?.includes('getaddrinfo ENOTFOUND') || error.message?.includes('404')) {
 				try {
 					let devSpaceInfo = await getDevSpaceDetails(landscapeUrl, currentJwt, devspaceId);
 					devSpaceInfo = await ensureDevSpaceRunning(landscapeUrl, currentJwt, devSpaceInfo);
@@ -436,9 +445,19 @@ async function setupSshTunnel(opts: {
 	config.addService(PortForwardingService);
 
 	return new Promise<SshClientSession>((resolve, reject) => {
-		// https://undici.nodejs.org/#/docs/api/WebSocket.md
-		const ws = new WebSocket(serverUri, {
-			protocols: ['ssh'],
+		// // https://undici.nodejs.org/#/docs/api/WebSocket.md
+		// Undici, which contains the native Node.js WebSocket implementation, is currently still unstable/ buggy in Node.js v24.11.1.
+		// That is why we use the ws package instead.
+
+		// const ws = new WebSocket(serverUri, {
+		// 	protocols: ['ssh'],
+		// 	headers: {
+		// 		Authorization: `Bearer ${opts.jwt}`,
+		// 	},
+		// });
+
+
+		const ws = new WebSocket(serverUri, ['ssh'], {
 			headers: {
 				Authorization: `Bearer ${opts.jwt}`,
 			},
@@ -505,9 +524,26 @@ async function setupSshTunnel(opts: {
 		});
 
 		ws.addEventListener('error', (event) => {
-			logger.error(`SSH Tunnel: WebSocket connectFailed for ${serverUri}`);
-			logger.debug(event.error);
-			reject(event.error);
+			// Try to extract a meaningful error from the event
+			const rawError = (event as any).error as unknown;
+
+			let err: Error;
+			if (rawError instanceof Error) {
+				err = rawError;
+			} else if (typeof rawError === 'string') {
+				err = new Error(rawError);
+			} else {
+				err = new Error(`WebSocket error event: ${JSON.stringify({
+					type: (event as any).type,
+					message: (event as any).message,
+					code: (event as any).code,
+				})}`);
+			}
+
+			logger.error(`SSH Tunnel: WebSocket connectFailed for ${serverUri}`, err);
+			logger.debug(err.stack || err.toString());
+
+			reject(err);
 		});
 	});
 }
