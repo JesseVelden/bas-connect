@@ -540,8 +540,13 @@ async function setupSshTunnel(opts: {
 				})}`);
 			}
 
-			logger.error(`SSH Tunnel: WebSocket connectFailed for ${serverUri}`, err);
-			logger.debug(err.stack || err.toString());
+			const errorMessage = err.message || '';
+			if (errorMessage.includes('404') || errorMessage.includes('Unexpected server response: 404')) {
+				logger.debug(`SSH Tunnel: WebSocket connection failed with 404 for ${serverUri} (will retry)`);
+			} else {
+				logger.error(`SSH Tunnel: WebSocket connectFailed for ${serverUri}`, err);
+				logger.debug(err.stack || err.toString());
+			}
 
 			reject(err);
 		});
