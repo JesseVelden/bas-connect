@@ -22,6 +22,7 @@ import { parse, stringify } from 'ssh-config';
 import { URL } from 'url';
 import WebSocket from 'ws';
 
+
 const isDebugMode = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
 const getCurrentTime = () => {
 	return new Date().toLocaleTimeString(undefined, {
@@ -343,6 +344,8 @@ let activeSshSession: SshClientSession | null = null;
 let activePortForwardingService: PortForwardingService | null = null;
 let reconnectAttempts = 0;
 let reconnecting = false;
+const KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
 async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPort: number; jwt: string }) {
 	if (reconnecting) return;
 	reconnecting = true;
@@ -381,7 +384,7 @@ async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPor
 			logger.error(`Error reconnecting SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 			const error = e as Error;
 
-			if (error.message?.includes('Received network error or non-101 status code.') || error?.message?.includes('getaddrinfo ENOTFOUND') || error.message?.includes('404')) {
+			if (error.message?.includes('Received network error or non-101 status code.') || error?.message?.includes('getaddrinfo ENOTFOUND') || error.message?.includes('404') || error.message?.includes('401')) {
 				try {
 					let devSpaceInfo = await getDevSpaceDetails(landscapeUrl, currentJwt, devspaceId);
 					devSpaceInfo = await ensureDevSpaceRunning(landscapeUrl, currentJwt, devSpaceInfo);
@@ -443,6 +446,7 @@ async function setupSshTunnel(opts: {
 	config.protocolExtensions.push(SshProtocolExtensionNames.sessionReconnect);
 	config.protocolExtensions.push(SshProtocolExtensionNames.sessionLatency);
 	config.addService(PortForwardingService);
+	config.keepAliveTimeoutInSeconds = KEEP_ALIVE_INTERVAL_MS / 1000;
 
 	return new Promise<SshClientSession>((resolve, reject) => {
 		// // https://undici.nodejs.org/#/docs/api/WebSocket.md
