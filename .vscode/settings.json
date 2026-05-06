@@ -1,5 +1,16 @@
 {
-  "eslint.format.enable": true,
+  // ============================================================================
+  // FORMATTING & FIX-ON-SAVE
+  // ============================================================================
+  // We use `oxlint --fix` for formatting + lint fixes.
+  // ESLint & Prettier must be disabled to avoid fighting with Oxc/Oxlint.
+  "eslint.enable": false,
+  "eslint.format.enable": false,
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": true,
+  "oxc.fmt.configPath": ".oxfmtrc.json",
+  "editor.defaultFormatter": "oxc.oxc-vscode",
+  "files.eol": "\n",
   "editor.codeActionsOnSave": {
     "source.fixAll": "explicit"
   }

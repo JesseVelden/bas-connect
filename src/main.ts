@@ -1,5 +1,11 @@
 import 'dotenv/config';
 
+import * as fs from 'fs';
+import * as http from 'http';
+import * as os from 'os';
+import * as path from 'path';
+import { URL } from 'url';
+
 import {
 	BaseStream,
 	ObjectDisposedError,
@@ -12,16 +18,10 @@ import {
 import { PortForwardingService } from '@microsoft/dev-tunnels-ssh-tcp';
 import { core, devspace, remotessh } from '@sap/bas-sdk';
 import findCacheDirectory from 'find-cache-directory';
-import * as fs from 'fs';
-import * as http from 'http';
 import open from 'open';
-import * as os from 'os';
-import * as path from 'path';
 import prompts from 'prompts';
 import { parse, stringify } from 'ssh-config';
-import { URL } from 'url';
 import WebSocket from 'ws';
-
 
 const isDebugMode = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
 const getCurrentTime = () => {
@@ -53,7 +53,7 @@ let landscapeUrl = process.env.BAS_LANDSCAPE_URL || ''; // e.g. 'https://xxx.eu2
 if (landscapeUrl) {
 	try {
 		landscapeUrl = `https://${new URL(landscapeUrl).hostname}`;
-	} catch (_e) {
+	} catch {
 		logger.error('Invalid BAS Landscape URL. Aborting');
 		process.exit(1);
 	}
@@ -243,7 +243,9 @@ async function ensureDevSpaceRunning(
 	// The VS code extension kinda does the same
 	let currentDevSpace = devSpace;
 	if (currentDevSpace.status !== devspace.DevSpaceStatus.RUNNING) {
-		logger.info(`Dev space ${currentDevSpace.id} is not ${devspace.DevSpaceStatus.RUNNING}, we are booting it up...`);
+		logger.info(
+			`Dev space ${currentDevSpace.id} is not ${devspace.DevSpaceStatus.RUNNING}, we are booting it up...`,
+		);
 		await devspace.updateDevSpace(targetLandscapeUrl, jwt, currentDevSpace.id, {
 			Suspended: false,
 			WorkspaceDisplayName: currentDevSpace.devspaceDisplayName,
@@ -254,7 +256,9 @@ async function ensureDevSpaceRunning(
 		while (currentDevSpace.status !== devspace.DevSpaceStatus.RUNNING && attempts < maxAttempts) {
 			await new Promise((resolve) => setTimeout(resolve, 10_000));
 			currentDevSpace = await getDevSpaceDetails(targetLandscapeUrl, jwt, currentDevSpace.id);
-			logger.info(`Current Dev Space status ${currentDevSpace.id}: ${currentDevSpace.status} (attempt ${++attempts})`);
+			logger.info(
+				`Current Dev Space status ${currentDevSpace.id}: ${currentDevSpace.status} (attempt ${++attempts})`,
+			);
 		}
 
 		if (currentDevSpace.status !== devspace.DevSpaceStatus.RUNNING) {
@@ -384,13 +388,21 @@ async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPor
 			logger.error(`Error reconnecting SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 			const error = e as Error;
 
-			if (error.message?.includes('Received network error or non-101 status code.') || error?.message?.includes('getaddrinfo ENOTFOUND') || error.message?.includes('404') || error.message?.includes('401')) {
+			if (
+				error.message?.includes('Received network error or non-101 status code.') ||
+				error?.message?.includes('getaddrinfo ENOTFOUND') ||
+				error.message?.includes('404') ||
+				error.message?.includes('401')
+			) {
 				try {
 					let devSpaceInfo = await getDevSpaceDetails(landscapeUrl, currentJwt, devspaceId);
 					devSpaceInfo = await ensureDevSpaceRunning(landscapeUrl, currentJwt, devSpaceInfo);
 					continue;
 				} catch (devSpaceError: any) {
-					if (devSpaceError?.code === 'ENOTFOUND' || devSpaceError?.message?.includes('getaddrinfo ENOTFOUND')) {
+					if (
+						devSpaceError?.code === 'ENOTFOUND' ||
+						devSpaceError?.message?.includes('getaddrinfo ENOTFOUND')
+					) {
 						logger.warn('Please check your internet connection! It seems the server could not be reached.');
 					} else if (devSpaceError?.response?.status === 401) {
 						logger.warn('Authentication token is expired or invalid, retrieving a new one...');
@@ -460,7 +472,6 @@ async function setupSshTunnel(opts: {
 		// 	},
 		// });
 
-
 		const ws = new WebSocket(serverUri, ['ssh'], {
 			headers: {
 				Authorization: `Bearer ${opts.jwt}`,
@@ -482,7 +493,9 @@ async function setupSshTunnel(opts: {
 
 				session.onClosed((event) => {
 					if (event?.reason !== SshDisconnectReason.byApplication) {
-						logger.info(`SSH Tunnel: Session closed for ${serverUri}. Reason: ${event.reason}, Error: ${event.error}`);
+						logger.info(
+							`SSH Tunnel: Session closed for ${serverUri}. Reason: ${event.reason}, Error: ${event.error}`,
+						);
 						setImmediate(() => handleSshSessionClosed(opts));
 					} else {
 						logger.info(`SSH Tunnel: Session closed for ${serverUri}.`);
@@ -506,7 +519,9 @@ async function setupSshTunnel(opts: {
 					'127.0.0.1', // Target address in remote (dev space)
 					remoteSshPort,
 				);
-				logger.info(`SSH Tunnel: Port forwarding active! Local ${opts.localSshPort} -> Remote ${remoteSshPort}`);
+				logger.info(
+					`SSH Tunnel: Port forwarding active! Local ${opts.localSshPort} -> Remote ${remoteSshPort}`,
+				);
 
 				for (const forward of portForwards) {
 					logger.info(`Setting up Port Forward: Local ${forward.localPort} -> Remote ${forward.remotePort}`);
@@ -537,11 +552,13 @@ async function setupSshTunnel(opts: {
 			} else if (typeof rawError === 'string') {
 				err = new Error(rawError);
 			} else {
-				err = new Error(`WebSocket error event: ${JSON.stringify({
-					type: (event as any).type,
-					message: (event as any).message,
-					code: (event as any).code,
-				})}`);
+				err = new Error(
+					`WebSocket error event: ${JSON.stringify({
+						type: (event as any).type,
+						message: (event as any).message,
+						code: (event as any).code,
+					})}`,
+				);
 			}
 
 			const errorMessage = err.message || '';
@@ -622,7 +639,7 @@ async function checkForNewVersion() {
 			return;
 		}
 
-		const { version: latestVersion } = await response.json() as { version: string };
+		const { version: latestVersion } = (await response.json()) as { version: string };
 		if (cacheFile) {
 			try {
 				const cacheDir = path.dirname(cacheFile);
@@ -634,13 +651,14 @@ async function checkForNewVersion() {
 		}
 
 		if (currentVersion !== latestVersion) {
-			logger.info(`A new version of ${pkg.name} is available (${latestVersion}). Please update by running: npm i -g ${pkg.name}`);
+			logger.info(
+				`A new version of ${pkg.name} is available (${latestVersion}). Please update by running: npm i -g ${pkg.name}`,
+			);
 		}
 	} catch (error) {
 		logger.debug(`Error checking for new version: ${error}`);
 	}
 }
-
 
 async function main() {
 	try {
@@ -681,7 +699,14 @@ async function main() {
 				const [localPortStr, remotePortStr] = value.split(':');
 				const localPort = parseInt(localPortStr, 10);
 				const remotePort = parseInt(remotePortStr, 10);
-				if (!isNaN(localPort) && !isNaN(remotePort) && localPort > 0 && localPort < 65536 && remotePort > 0 && remotePort < 65536) {
+				if (
+					!isNaN(localPort) &&
+					!isNaN(remotePort) &&
+					localPort > 0 &&
+					localPort < 65536 &&
+					remotePort > 0 &&
+					remotePort < 65536
+				) {
 					portForwards.push({ localPort: localPort, remotePort: remotePort });
 					logger.debug(`Port forwarding added: Local ${localPort} -> Remote ${remotePort}`);
 				} else {
@@ -750,7 +775,12 @@ async function main() {
 		logger.info('Setup complete!');
 		logger.info('You can now connect to your dev space via SSH:');
 		logger.info(`ssh ${sshHostAlias}`);
-		logger.info('Or configure your SSH client to directly use 127.0.0.1:' + fixedSshPort + ' with the key ' + sshKeyFilePath);
+		logger.info(
+			'Or configure your SSH client to directly use 127.0.0.1:' +
+				fixedSshPort +
+				' with the key ' +
+				sshKeyFilePath,
+		);
 		logger.info('The SSH tunnel will remain active as long as this script is running.');
 		logger.info('Press CTRL+C to stop the script and the tunnel.');
 		logger.info('------------------------------------------------------------');
