@@ -11,8 +11,8 @@
 		"build": "tsc",
 		"start": "node bin/bas-connect",
 		"dev": "cross-env DEBUG=true node --experimental-transform-types --no-warnings=ExperimentalWarning src/main.ts",
-		"lint": "eslint src/",
-		"lint:fix": "eslint src/ --fix"
+		"lint": "oxlint src/",
+		"lint:fix": "oxlint src/ --fix"
 	},
 	"author": "Jesse van der Velden",
 	"license": "MIT",
