@@ -609,6 +609,15 @@ function getCacheFilePath(): string | undefined {
 	return path.join(cacheDir, 'cache.json');
 }
 
+function isRunningViaNpx(): boolean {
+	const userAgent = process.env.npm_config_user_agent ?? '';
+	const execPath = process.env.npm_execpath ?? '';
+
+	return (
+		userAgent.includes(' npx/') || userAgent.startsWith('npx/') || /(^|[\\/])npx(?:-cli)?(?:\.js)?$/i.test(execPath)
+	);
+}
+
 async function checkForNewVersion() {
 	const cacheFile = getCacheFilePath();
 	const cacheDuration = 24 * 60 * 60 * 1000; // 24 hours
@@ -662,7 +671,7 @@ async function checkForNewVersion() {
 
 async function main() {
 	try {
-		await checkForNewVersion();
+		if (!isRunningViaNpx()) await checkForNewVersion();
 
 		const args = process.argv.slice(2); // Skip 'node' and script path
 		for (let i = 0; i < args.length; i++) {
