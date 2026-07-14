@@ -27,26 +27,26 @@
 		"README.md"
 	],
 	"dependencies": {
-		"@microsoft/dev-tunnels-ssh": "3.12.29",
-		"@microsoft/dev-tunnels-ssh-tcp": "3.12.29",
-		"@sap/bas-sdk": "3.13.7",
+		"@microsoft/dev-tunnels-ssh": "3.12.36",
+		"@microsoft/dev-tunnels-ssh-tcp": "3.12.36",
+		"@sap/bas-sdk": "3.13.10",
 		"dotenv": "17.4.2",
 		"find-cache-directory": "6.0.0",
 		"open": "11.0.0",
 		"prompts": "2.4.2",
 		"ssh-config": "5.1.0",
-		"ws": "8.20.0"
+		"ws": "8.21.0"
 	},
 	"devDependencies": {
-		"@types/node": "^24.10.1",
+		"@types/node": "^24.13.3",
 		"@types/open": "^6.2.1",
 		"@types/prompts": "^2.4.9",
 		"@types/ws": "^8.18.1",
 		"cross-env": "^10.1.0",
-		"oxfmt": "^0.48.0",
-		"oxlint": "^1.63.0",
-		"oxlint-tsgolint": "^0.22.1",
-		"typescript": "^6.0.3"
+		"oxfmt": "^0.58.0",
+		"oxlint": "^1.73.0",
+		"oxlint-tsgolint": "^0.24.0",
+		"typescript": "^7.0.2"
 	},
 	"engines": {
 		"node": ">=22"
