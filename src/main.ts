@@ -69,6 +69,7 @@ if (process.env.BAS_SSH_PORT && (isNaN(fixedSshPort) || fixedSshPort <= 0 || fix
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_DELAY_MS = 10_000;
+const SESSION_CLOSE_TIMEOUT_MS = 5_000;
 
 let currentJwt = ''; // Global for reconnects
 let currentDevSpaceWsUrl = ''; // wsUrl for reconnects, e.g. 'wss://port33765--workspaces-ws-xxx.eu20cf.applicationstudio.cloud.sap:443'
@@ -131,7 +132,7 @@ class WebSocketClientStream extends BaseStream {
 
 	public dispose(): void {
 		if (!this.disposed) {
-			this.websocket.close();
+			this.websocket.terminate();
 		}
 		super.dispose();
 	}
@@ -350,6 +351,53 @@ let reconnectAttempts = 0;
 let reconnecting = false;
 const KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
+function stopPortForwarder(): void {
+	if (!activePortForwardingService) return;
+
+	const portForwardingService = activePortForwardingService;
+	activePortForwardingService = null;
+	logger.debug(`Stopping port forwarder on port ${fixedSshPort}...`);
+	try {
+		portForwardingService.dispose();
+		logger.debug(`Port forwarder on port ${fixedSshPort} successfully stopped.`);
+	} catch (disposeError) {
+		logger.error(`Error stopping port forwarder on port ${fixedSshPort}:`, disposeError);
+	}
+}
+
+async function closeSshSession(session: SshClientSession, description: string): Promise<void> {
+	if (session.isClosed) return;
+
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([
+			session.close(SshDisconnectReason.byApplication),
+			new Promise<never>((_, reject) => {
+				timeout = setTimeout(
+					() =>
+						reject(
+							new Error(`SSH session did not close within ${SESSION_CLOSE_TIMEOUT_MS / 1000} seconds.`),
+						),
+					SESSION_CLOSE_TIMEOUT_MS,
+				);
+			}),
+		]);
+	} catch (closeError) {
+		logger.error(`Error while closing ${description}:`, closeError);
+	} finally {
+		if (timeout) clearTimeout(timeout);
+
+		if (!session.isClosed) {
+			logger.warn(`${description} did not close gracefully. Forcefully disposing the SSH session and WebSocket.`);
+			try {
+				session.dispose();
+			} catch (disposeError) {
+				logger.error(`Error while forcefully disposing ${description}:`, disposeError);
+			}
+		}
+	}
+}
+
 async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPort: number; jwt: string }) {
 	if (reconnecting) return;
 	reconnecting = true;
@@ -358,16 +406,7 @@ async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPor
 	while (reconnectAttempts < MAX_RECONNECT_ATTEMPTS - 1) {
 		reconnectAttempts++;
 		logger.info(`Attempting to reconnect SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
-		if (activePortForwardingService) {
-			logger.debug(`Stopping port forwarder on port ${fixedSshPort}...`);
-			try {
-				activePortForwardingService.dispose();
-				logger.debug(`Port forwarder on port ${fixedSshPort} successfully stopped.`);
-			} catch (disposeError) {
-				logger.error(`Error stopping port forwarder on port ${fixedSshPort}:`, disposeError);
-			}
-			activePortForwardingService = null;
-		}
+		stopPortForwarder();
 		if (!currentJwt || !currentDevSpaceWsUrl) {
 			logger.error('Cannot reconnect: JWT or DevSpace WebSocket URL is missing. Aborting retries.');
 			reconnecting = false;
@@ -446,8 +485,8 @@ async function setupSshTunnel(opts: {
 
 	if (existingSession) {
 		logger.debug(`Closing existing SSH session for ${serverUri}`);
-		await existingSession.close(SshDisconnectReason.byApplication);
 		sessionMap.delete(serverUri);
+		await closeSshSession(existingSession, `existing SSH session for ${serverUri}`);
 	}
 
 	const config = new SshSessionConfiguration();
@@ -580,23 +619,22 @@ const cleanup = async (isErrorExit = false) => {
 	isCleaningUp = true;
 
 	logger.info('Stopping and cleaning up...');
+	stopPortForwarder();
 	if (activeSshSession && !activeSshSession.isClosed) {
 		logger.debug('Closing active SSH session...');
-		activeSshSession.onClosed(() => logger.debug('SSH session closed.'));
-		await activeSshSession.close(SshDisconnectReason.byApplication).catch((err) => {
-			logger.error('Error while closing SSH session', err);
-		});
+		const session = activeSshSession;
+		activeSshSession = null;
+		session.onClosed(() => logger.debug('SSH session closed.'));
+		await closeSshSession(session, 'active SSH session');
 	}
 	activeSshSession = null;
 
 	if (currentDevSpaceWsUrl) {
 		const sessionInMap = sessionMap.get(currentDevSpaceWsUrl);
-		if (sessionInMap && !sessionInMap.isClosed) {
-			await sessionInMap.close(SshDisconnectReason.byApplication).catch((err) => {
-				logger.error(`Error while closing SSH session for ${currentDevSpaceWsUrl}:`, err);
-			});
-		}
 		sessionMap.delete(currentDevSpaceWsUrl);
+		if (sessionInMap && !sessionInMap.isClosed) {
+			await closeSshSession(sessionInMap, `SSH session for ${currentDevSpaceWsUrl}`);
+		}
 	}
 
 	logger.info(isErrorExit ? 'Process ended because of an error.' : 'Process ended.');
