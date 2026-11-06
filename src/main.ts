@@ -60,6 +60,17 @@ function hasResponseStatus(error: unknown, status: number): boolean {
 	return typeof response === 'object' && response !== null && 'status' in response && response.status === status;
 }
 
+function isTransientNetworkError(error: unknown): boolean {
+	const message = getErrorMessage(error);
+	return (
+		hasErrorCode(error, 'ECONNRESET') ||
+		hasErrorCode(error, 'ECONNREFUSED') ||
+		hasErrorCode(error, 'ENETUNREACH') ||
+		hasErrorCode(error, 'ETIMEDOUT') ||
+		/\b(?:ECONNRESET|ECONNREFUSED|ENETUNREACH|ETIMEDOUT|EAI_AGAIN|ENOTFOUND)\b/.test(message)
+	);
+}
+
 class WebSocketCloseError extends Error {
 	public constructor(
 		message: string,
@@ -276,6 +287,7 @@ async function getDevSpaceDetails(
 	targetLandscapeUrl: string,
 	jwt: string,
 	targetDevspaceId: string,
+	logErrors = true,
 ): Promise<devspace.DevspaceInfo> {
 	logger.debug(`Retrieving dev space details for ${targetDevspaceId}...`);
 	try {
@@ -288,7 +300,7 @@ async function getDevSpaceDetails(
 		logger.debug(`Found dev space: ${targetDevSpace.id}, Status: ${targetDevSpace.status}`);
 		return targetDevSpace;
 	} catch (error) {
-		logger.error(`Error retrieving Dev Space details for ${targetDevspaceId}`);
+		if (logErrors) logger.error(`Error retrieving Dev Space details for ${targetDevspaceId}`);
 		throw error;
 	}
 }
@@ -297,6 +309,7 @@ async function ensureDevSpaceRunning(
 	targetLandscapeUrl: string,
 	jwt: string,
 	devSpace: devspace.DevspaceInfo,
+	logErrors = true,
 ): Promise<devspace.DevspaceInfo> {
 	// The VS code extension kinda does the same
 	let currentDevSpace = devSpace;
@@ -310,6 +323,7 @@ async function ensureDevSpaceRunning(
 				jwt,
 				currentDevSpace.id,
 				devspace.DevSpaceStatus.STOPPED,
+				logErrors,
 			);
 		}
 		if (currentDevSpace.status !== devspace.DevSpaceStatus.STARTING) {
@@ -324,6 +338,7 @@ async function ensureDevSpaceRunning(
 			jwt,
 			currentDevSpace.id,
 			devspace.DevSpaceStatus.RUNNING,
+			logErrors,
 		);
 		logger.info(`Dev space ${currentDevSpace.id} is now ${devspace.DevSpaceStatus.RUNNING}.`);
 	}
@@ -339,14 +354,15 @@ async function waitForDevSpaceStatus(
 	jwt: string,
 	devSpaceId: string,
 	expectedStatus: devspace.DevSpaceStatus,
+	logErrors = true,
 ): Promise<devspace.DevspaceInfo> {
 	const maxAttempts = Math.ceil(DEV_SPACE_STATUS_TIMEOUT_MS / DEV_SPACE_STATUS_POLL_INTERVAL_MS);
-	let currentDevSpace = await getDevSpaceDetails(targetLandscapeUrl, jwt, devSpaceId);
+	let currentDevSpace = await getDevSpaceDetails(targetLandscapeUrl, jwt, devSpaceId, logErrors);
 	let attempts = 0;
 
 	while (currentDevSpace.status !== expectedStatus && attempts < maxAttempts) {
 		await new Promise((resolve) => setTimeout(resolve, DEV_SPACE_STATUS_POLL_INTERVAL_MS));
-		currentDevSpace = await getDevSpaceDetails(targetLandscapeUrl, jwt, devSpaceId);
+		currentDevSpace = await getDevSpaceDetails(targetLandscapeUrl, jwt, devSpaceId, logErrors);
 		logger.info(
 			`Current Dev Space status ${currentDevSpace.id}: ${currentDevSpace.status} (attempt ${++attempts})`,
 		);
@@ -469,9 +485,9 @@ let devSpaceHealthCheckInProgress = false;
 const sessionsBeingClosed = new WeakSet<SshClientSession>();
 const KEEP_ALIVE_INTERVAL_MS = 60 * 1000; // 1 minute
 
-function isWebSocket503Error(error: unknown): boolean {
+function isWebSocketServerError(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : String(error);
-	return /\b503\b/.test(message);
+	return /\b(?:502|503)\b/.test(message);
 }
 
 function getDevSpaceWsUrl(devSpaceUrl: string): string {
@@ -558,22 +574,28 @@ async function handleSshSessionClosed(opts: { devSpaceWsUrl: string; localSshPor
 			reconnecting = false;
 			return;
 		} catch (e) {
-			logger.error(`Error reconnecting SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 			const errorMessage = getErrorMessage(e);
+			if (isTransientNetworkError(e)) {
+				logger.debug(
+					`Error reconnecting SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}): ${errorMessage}`,
+				);
+			} else {
+				logger.error(`Error reconnecting SSH tunnel (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`, e);
+			}
 
-			if (isWebSocket503Error(e)) {
+			if (isWebSocketServerError(e)) {
 				try {
 					const devSpaceInfo = await restartDevSpace(landscapeUrl, currentJwt, devspaceId);
 					if (!devSpaceInfo.url) {
 						logger.error(`Dev space ${devSpaceInfo.id} restarted but does not have an URL.`);
 					} else {
 						currentDevSpaceWsUrl = getDevSpaceWsUrl(devSpaceInfo.url);
-						logger.info('Dev Space restarted after the WebSocket server returned HTTP 503.');
+						logger.info('Dev Space restarted after the WebSocket server returned HTTP 502/503.');
 						continue;
 					}
 				} catch (devSpaceError) {
 					logger.error(
-						'Could not restart the Dev Space after the WebSocket server returned HTTP 503.',
+						'Could not restart the Dev Space after the WebSocket server returned HTTP 502/503.',
 						devSpaceError,
 					);
 				}
@@ -654,21 +676,51 @@ function startDevSpaceHealthCheck(): void {
 		devSpaceHealthCheckInProgress = true;
 
 		try {
-			const devSpaceInfo = await getDevSpaceDetails(landscapeUrl, currentJwt, devspaceId);
-			if (devSpaceInfo.status === devspace.DevSpaceStatus.RUNNING) return;
+			for (let attempt = 0; attempt < 2; attempt++) {
+				try {
+					logger.debug(`Checking Dev Space ${devspaceId} health...`);
+					const devSpaceInfo = await getDevSpaceDetails(landscapeUrl, currentJwt, devspaceId, false);
+					if (devSpaceInfo.status === devspace.DevSpaceStatus.RUNNING) {
+						logger.debug(`Dev Space ${devSpaceInfo.id} is healthy.`);
+						return;
+					}
 
-			logger.warn(
-				`Dev Space ${devSpaceInfo.id} is ${devSpaceInfo.status} while the tunnel is active; starting it again...`,
-			);
-			const runningDevSpace = await ensureDevSpaceRunning(landscapeUrl, currentJwt, devSpaceInfo);
-			if (!runningDevSpace.url) {
-				throw new Error(`Dev space ${runningDevSpace.id} is running but does not have an URL.`);
+					logger.warn(
+						`Dev Space ${devSpaceInfo.id} is ${devSpaceInfo.status} while the tunnel is active; starting it again...`,
+					);
+					const runningDevSpace = await ensureDevSpaceRunning(landscapeUrl, currentJwt, devSpaceInfo, false);
+					if (!runningDevSpace.url) {
+						throw new Error(`Dev space ${runningDevSpace.id} is running but does not have an URL.`);
+					}
+
+					currentDevSpaceWsUrl = getDevSpaceWsUrl(runningDevSpace.url);
+					requestSshReconnect(`Dev Space ${runningDevSpace.id} is running again; reconnecting the SSH tunnel.`);
+					return;
+				} catch (error) {
+					if (attempt === 0 && hasResponseStatus(error, 401)) {
+						logger.warn('Authentication token is expired or invalid, retrieving a new one...');
+						try {
+							currentJwt = await retrieveJwtInteractive(landscapeUrl);
+							logger.info('New authentication token retrieved successfully.');
+							continue;
+						} catch (authError) {
+							logger.error(
+								'Failed to retrieve a new token. Dev Space health check will be retried.',
+								authError,
+							);
+							return;
+						}
+					}
+
+					const message = 'Dev Space health check failed; it will be retried.';
+					if (isTransientNetworkError(error)) {
+						logger.debug(`${message} ${getErrorMessage(error)}`);
+					} else {
+						logger.error(message, error);
+					}
+					return;
+				}
 			}
-
-			currentDevSpaceWsUrl = getDevSpaceWsUrl(runningDevSpace.url);
-			requestSshReconnect(`Dev Space ${runningDevSpace.id} is running again; reconnecting the SSH tunnel.`);
-		} catch (error) {
-			logger.error('Dev Space health check failed; it will be retried.', error);
 		} finally {
 			devSpaceHealthCheckInProgress = false;
 		}
@@ -807,7 +859,11 @@ async function setupSshTunnel(opts: {
 					}
 				}
 				ws.terminate();
-				logger.error('SSH Tunnel: Error during connection, authentication, or port forwarding.', err);
+				if (isTransientNetworkError(err)) {
+					logger.debug(`SSH Tunnel: Connection temporarily failed: ${getErrorMessage(err)}`);
+				} else {
+					logger.error('SSH Tunnel: Error during connection, authentication, or port forwarding.', err);
+				}
 				reject(err instanceof Error ? err : new Error(String(err)));
 			}
 		};
@@ -820,12 +876,14 @@ async function setupSshTunnel(opts: {
 			const err = new Error(event.message || `WebSocket error event: ${event.type}`);
 
 			const errorMessage = err.message || '';
-			if (isWebSocket503Error(err)) {
+			if (isWebSocketServerError(err)) {
 				logger.debug(
-					`SSH Tunnel: WebSocket connection failed with 503 for ${serverUri} (will restart workspace)`,
+					`SSH Tunnel: WebSocket connection failed with HTTP 502/503 for ${serverUri} (will restart workspace)`,
 				);
 			} else if (errorMessage.includes('404') || errorMessage.includes('Unexpected server response: 404')) {
 				logger.debug(`SSH Tunnel: WebSocket connection failed with 404 for ${serverUri} (will retry)`);
+			} else if (isTransientNetworkError(err)) {
+				logger.debug(`SSH Tunnel: WebSocket connection temporarily failed for ${serverUri}: ${err.message}`);
 			} else {
 				logger.error(`SSH Tunnel: WebSocket connectFailed for ${serverUri}`, err);
 				logger.debug(err.stack || err.toString());
@@ -908,7 +966,7 @@ async function checkForNewVersion() {
 	}
 
 	try {
-		const { default: pkg } = await import('../package.json');
+		const { default: pkg } = await import('../package.json', { with: { type: 'json' } });
 		const currentVersion = pkg.version;
 
 		logger.debug(`Checking for new version of ${pkg.name} on npmjs.com...`);
@@ -1067,7 +1125,7 @@ async function main() {
 				jwt: currentJwt,
 			});
 		} catch (error) {
-			if (!isWebSocket503Error(error)) throw error;
+			if (!isWebSocketServerError(error)) throw error;
 
 			const restartedDevSpace = await restartDevSpace(landscapeUrl, currentJwt, devSpace.id);
 			if (!restartedDevSpace.url) {
@@ -1076,7 +1134,7 @@ async function main() {
 				});
 			}
 			currentDevSpaceWsUrl = getDevSpaceWsUrl(restartedDevSpace.url);
-			logger.info('Dev Space restarted after the WebSocket server returned HTTP 503.');
+			logger.info('Dev Space restarted after the WebSocket server returned HTTP 502/503.');
 			activeSshSession = await setupSshTunnel({
 				devSpaceWsUrl: currentDevSpaceWsUrl,
 				localSshPort: fixedSshPort,
@@ -1109,11 +1167,18 @@ async function main() {
 		}); // Terminate
 
 		process.on('uncaughtException', (error: unknown) => {
-			if (hasErrorCode(error, 'ECONNRESET')) return; // ignore socket reset on Windows
+			if (isTransientNetworkError(error)) {
+				logger.debug(`Ignoring transient network error: ${getErrorMessage(error)}`);
+				return;
+			}
 			throw error; // re-throw anything else
 		});
 	} catch (error: unknown) {
-		logger.error(getErrorMessage(error));
+		if (isTransientNetworkError(error)) {
+			logger.debug(`Transient network error: ${getErrorMessage(error)}`);
+		} else {
+			logger.error(getErrorMessage(error));
+		}
 		process.exit(1);
 	}
 }
