@@ -105,6 +105,7 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_DELAY_MS = 10_000;
 const SESSION_CLOSE_TIMEOUT_MS = 5_000;
 const WS_CONNECT_TIMEOUT_MS = 15_000;
+const SSH_TUNNEL_SETUP_TIMEOUT_MS = 30_000;
 const DEV_SPACE_STATUS_POLL_INTERVAL_MS = 10_000;
 const DEV_SPACE_STATUS_TIMEOUT_MS = 5 * 60 * 1000;
 const DEV_SPACE_HEALTH_CHECK_INTERVAL_MS = 60_000;
@@ -778,8 +779,33 @@ async function setupSshTunnel(opts: {
 
 		ws.binaryType = 'arraybuffer';
 
+		let session: SshClientSession | undefined;
+		let setupSettled = false;
+		let setupSucceeded = false;
+		const setupTimeout = setTimeout(() => {
+			failSetup(
+				new Error(`SSH tunnel setup did not complete within ${SSH_TUNNEL_SETUP_TIMEOUT_MS / 1000} seconds.`),
+			);
+		}, SSH_TUNNEL_SETUP_TIMEOUT_MS);
+
+		const failSetup = (error: Error): void => {
+			if (setupSettled) return;
+			setupSettled = true;
+			clearTimeout(setupTimeout);
+
+			if (session) {
+				sessionsBeingClosed.add(session);
+				try {
+					session.dispose();
+				} catch (disposeError) {
+					logger.error('SSH Tunnel: Error disposing failed session.', disposeError);
+				}
+			}
+			ws.terminate();
+			reject(error);
+		};
+
 		const handleWebSocketOpen = async (): Promise<void> => {
-			let session: SshClientSession | undefined;
 			try {
 				logger.info(`SSH Tunnel: WebSocket connected!`);
 				const stream = new WebSocketClientStream(ws);
@@ -800,6 +826,14 @@ async function setupSshTunnel(opts: {
 
 				session.onClosed((event) => {
 					if (!session || sessionsBeingClosed.has(session) || isCleaningUp) return;
+					if (!setupSucceeded) {
+						failSetup(
+							new Error(
+								`SSH session closed before tunnel setup completed for ${serverUri}. Reason: ${event.reason}`,
+							),
+						);
+						return;
+					}
 					if (event?.reason !== SshDisconnectReason.byApplication) {
 						logger.info(
 							`SSH Tunnel: Session closed for ${serverUri}. Reason: ${event.reason}, Error: ${event.error}`,
@@ -814,6 +848,10 @@ async function setupSshTunnel(opts: {
 
 				session.onDisconnected(() => {
 					if (!session || sessionsBeingClosed.has(session) || isCleaningUp) return;
+					if (!setupSucceeded) {
+						failSetup(new Error(`SSH session disconnected before tunnel setup completed for ${serverUri}.`));
+						return;
+					}
 					logger.info(`SSH Tunnel: Session disconnected for ${serverUri}`);
 					setImmediate(() => {
 						void handleSshSessionClosed(opts);
@@ -846,25 +884,21 @@ async function setupSshTunnel(opts: {
 					);
 				}
 
+				if (setupSettled) return;
+				setupSettled = true;
+				setupSucceeded = true;
+				clearTimeout(setupTimeout);
 				sessionMap.set(serverUri, session);
 				activeSshSession = session;
 				resolve(session);
 			} catch (err) {
-				if (session) {
-					sessionsBeingClosed.add(session);
-					try {
-						session.dispose();
-					} catch (disposeError) {
-						logger.error('SSH Tunnel: Error disposing failed session.', disposeError);
-					}
-				}
-				ws.terminate();
+				if (setupSettled) return;
 				if (isTransientNetworkError(err)) {
 					logger.debug(`SSH Tunnel: Connection temporarily failed: ${getErrorMessage(err)}`);
 				} else {
 					logger.error('SSH Tunnel: Error during connection, authentication, or port forwarding.', err);
 				}
-				reject(err instanceof Error ? err : new Error(String(err)));
+				failSetup(err instanceof Error ? err : new Error(String(err)));
 			}
 		};
 
@@ -889,7 +923,7 @@ async function setupSshTunnel(opts: {
 				logger.debug(err.stack || err.toString());
 			}
 
-			reject(err);
+			failSetup(err);
 		});
 	});
 }
